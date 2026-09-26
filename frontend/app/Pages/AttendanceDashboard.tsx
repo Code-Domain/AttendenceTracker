@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 
 // Assuming your lib/api has these exported
-import { getStudents, createStudent, removeStudent, createManyStudents } from "@/lib/api";
+import { getStudents, createStudent, removeStudent, createManyStudents, getSchedules, createSchedule, createManySchedules, removeSchedule } from "@/lib/api";
 
 // --- Types & Interfaces ---
 type View = 'dashboard' | 'attendance' | 'schedule' | 'students' | 'analytics' | 'profile';
@@ -104,6 +104,31 @@ export default function AttendanceDashboard() {
     loadStudents();
   }, []);
 
+  useEffect(() => {
+    async function loadData() {
+      try {
+        // Load Students
+        const studentData = await getStudents();
+        setStudents(
+          studentData.map((student: any) => ({
+            id: student._id, name: student.name, rollNo: student.rollNo, semester: student.semester
+          }))
+        );
+
+        // Load Schedules
+        const scheduleData = await getSchedules();
+        setSchedule(
+          scheduleData.map((c: any) => ({
+            id: c._id, day: c.day, time: c.time, subject: c.subject, semester: c.semester, rollRange: c.rollRange
+          }))
+        );
+      } catch (error) {
+        console.error("Loading data failed:", error);
+      }
+    }
+    loadData();
+  }, []);
+
   const logActivity = (action: string, details: string) => {
     setRecentActivities(prev => [
       { id: `act${Date.now()}`, action, details, timestamp: new Date().toISOString() },
@@ -112,42 +137,55 @@ export default function AttendanceDashboard() {
   };
 
   // --- Excel Upload & Validation ---
-  const handleScheduleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleScheduleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const data = new Uint8Array(event.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
         const json: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 });
         if (json.length < 2) throw new Error("Empty sheet");
 
-        const headers = json[0].map((h: any) => String(h).trim());
-        if (["Day", "Time", "Subject", "Semester", "RollNoRange"].some(rh => !headers.includes(rh))) {
+        const headers = json[0].filter((h: any) => h).map((h: any) => String(h).trim().toLowerCase());
+        if (["day", "time", "subject", "semester", "rollnorange"].some(rh => !headers.includes(rh))) {
           setModal({ show: true, type: 'schedule' });
           return;
         }
 
         const getCellValue = (row: any[], headerName: string) => row[headers.indexOf(headerName)] || "";
-        const parsedSchedule: ScheduleClass[] = [];
+        const parsedSchedule: any[] = [];
         for (let i = 1; i < json.length; i++) {
           const row = json[i];
           if (!row || row.length === 0) continue;
-          const dayMap: { [key: string]: string } = { 'MON': 'Monday', 'TUE': 'Tuesday', 'WED': 'Wednesday', 'THU': 'Thursday', 'FRI': 'Friday', 'SAT': 'Saturday' };
-          let dayValue = String(getCellValue(row, "Day")).trim();
+          const dayMap: { [key: string]: string } = { 'mon': 'Monday', 'tue': 'Tuesday', 'wed': 'Wednesday', 'thu': 'Thursday', 'fri': 'Friday', 'sat': 'Saturday' };
+          let dayValue = String(getCellValue(row, "day")).trim();
           parsedSchedule.push({
-            id: `c${Date.now()}_${i}`, day: dayMap[dayValue.toUpperCase()] || dayValue,
-            time: String(getCellValue(row, "Time") || '').trim(),
-            subject: String(getCellValue(row, "Subject") || '').trim(),
-            semester: parseInt(String(getCellValue(row, "Semester"))) || 0,
-            rollRange: String(getCellValue(row, "RollNoRange") || '').trim(),
+            day: dayMap[dayValue.toLowerCase()] || dayValue,
+            time: String(getCellValue(row, "time") || '').trim(),
+            subject: String(getCellValue(row, "subject") || '').trim(),
+            semester: parseInt(String(getCellValue(row, "semester"))) || 0,
+            rollRange: String(getCellValue(row, "rollnorange") || '').trim(),
           });
         }
+
         if (parsedSchedule.length > 0) {
-          setSchedule(parsedSchedule); // Note: You need a backend route to save this schedule to DB as well!
-          logActivity("Uploaded Schedule", `Added ${parsedSchedule.length} classes via Excel`);
-          alert(`Successfully uploaded ${parsedSchedule.length} classes!`);
+          try {
+            // 1. Save to Database
+            const savedData = await createManySchedules(parsedSchedule);
+            const formattedSaved = savedData.map((c: any) => ({
+              id: c._id, day: c.day, time: c.time, subject: c.subject, semester: c.semester, rollRange: c.rollRange
+            }));
+
+            // 2. Update UI
+            setSchedule(prev => [...prev, ...formattedSaved]);
+            logActivity("Uploaded Schedule", `Added ${formattedSaved.length} classes via Excel`);
+            alert(`Successfully uploaded and saved ${formattedSaved.length} classes!`);
+          } catch (error) {
+            console.error("Error saving schedule to database:", error);
+            alert("Schedule uploaded but failed to save to database.");
+          }
         }
       } catch (error) {
         console.error(error);
@@ -156,6 +194,7 @@ export default function AttendanceDashboard() {
     };
     reader.readAsArrayBuffer(file);
   };
+  
 
   const handleStudentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -228,16 +267,29 @@ export default function AttendanceDashboard() {
   };
 
   // --- CRUD & Attendance Logic ---
-  const addClass = (cls: Omit<ScheduleClass, 'id'>) => {
-    const newCls = { ...cls, id: `c${Date.now()}` };
-    setSchedule([...schedule, newCls]);
-    logActivity("Added Class", `${cls.subject} on ${cls.day}`);
+    const addClass = async (cls: Omit<ScheduleClass, 'id'>) => {
+    try {
+      const savedClass = await createSchedule(cls);
+      setSchedule(prev => [...prev, { 
+        id: savedClass._id, day: savedClass.day, time: savedClass.time, 
+        subject: savedClass.subject, semester: savedClass.semester, rollRange: savedClass.rollRange 
+      }]);
+      logActivity("Added Class", `${cls.subject} on ${cls.day}`);
+    } catch (error) {
+      alert("Could not save class to database.");
+    }
   };
 
-  const deleteClass = (id: string) => {
-    const cls = schedule.find(c => c.id === id);
-    setSchedule(schedule.filter(c => c.id !== id));
-    if (cls) logActivity("Deleted Class", `${cls.subject}`);
+  const deleteClass = async (id: string) => {
+    try {
+      await removeSchedule(id);
+      const cls = schedule.find(c => c.id === id);
+      setSchedule(prev => prev.filter(c => c.id !== id));
+      if (cls) logActivity("Deleted Class", `${cls.subject}`);
+    } catch (error) {
+      console.error("Failed to delete class:", error);
+      alert("Could not delete class from database.");
+    }
   };
 
   const addStudent = async (stu: Omit<Student, "id">) => {
@@ -806,21 +858,6 @@ const ProfileView = () => {
               <div className="flex justify-between items-center pb-3 border-b border-slate-100"><span className="text-sm text-slate-600">Total Classes</span><span className="font-bold text-slate-900">12</span></div>
               <div className="flex justify-between items-center pb-3 border-b border-slate-100"><span className="text-sm text-slate-600">Total Students</span><span className="font-bold text-slate-900">240</span></div>
               <div className="flex justify-between items-center"><span className="text-sm text-slate-600">Years Active</span><span className="font-bold text-slate-900">5.2</span></div>
-            </div>
-          </Card>
-          <Card>
-            <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2"><Bell size={20} className="text-slate-500" /> Preferences</h3>
-            <div className="space-y-4">
-              <label className="flex items-center justify-between cursor-pointer"><span className="text-sm text-slate-600 flex items-center gap-2"> Email Notifications</span><input type="checkbox" defaultChecked className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500" /></label>
-              <label className="flex items-center justify-between cursor-pointer"><span className="text-sm text-slate-600 flex items-center gap-2"><Calendar size={14} /> Daily Roster Reminder</span><input type="checkbox" defaultChecked className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500" /></label>
-              <label className="flex items-center justify-between cursor-pointer"><span className="text-sm text-slate-600 flex items-center gap-2"><Moon size={14} /> Dark Mode</span><input type="checkbox" className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500" /></label>
-            </div>
-          </Card>
-          <Card>
-            <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2"><Monitor size={20} className="text-slate-500" /> Login Activity</h3>
-            <div className="space-y-3 text-sm">
-              <div className="flex items-start gap-2 text-slate-600"><div className="w-2 h-2 rounded-full bg-green-500 mt-2"></div><div><p className="font-medium text-slate-700">Logged in from Chrome</p><p className="text-xs text-slate-400">Today at 09:15 AM</p></div></div>
-              <div className="flex items-start gap-2 text-slate-600"><div className="w-2 h-2 rounded-full bg-slate-300 mt-2"></div><div><p className="font-medium text-slate-700">Logged in from Safari</p><p className="text-xs text-slate-400">Yesterday at 08:42 PM</p></div></div>
             </div>
           </Card>
         </div>

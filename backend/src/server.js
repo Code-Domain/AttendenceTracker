@@ -4,7 +4,8 @@ const express = require("express");
 const cors = require("cors");
 const connectDB = require("../src/config/database");
 const studentRoutes = require("./routes/studentRoutes");
-
+const scheduleRoutes = require("./routes/scheduleRoutes");
+const authRoutes = require("./routes/authRoutes");
 const app = express();
 
 connectDB();
@@ -12,6 +13,8 @@ connectDB();
 app.use(cors());
 app.use(express.json());
 app.use("/api/students", studentRoutes);
+app.use("/api/schedules", scheduleRoutes); 
+app.use("/api/auth", authRoutes);
 
 app.get("/", (req , res ) => {
     res.json({
