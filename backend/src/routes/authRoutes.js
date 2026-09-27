@@ -17,7 +17,7 @@ router.post("/register", async (req, res) => {
     teacher = new Teacher({ name, email, password, department, employeeId });
     await teacher.save();
 
-    const payload = { teacher: { id: teacher._id } };
+    const payload = { teacher: { id: teacher._id.toString() } }; // Ensure ID is a string
     const token = jwt.sign(payload, process.env.JWT_SECRET || "my_super_secret_key_123", { expiresIn: "1d" });
 
     res.status(201).json({ success: true, token, teacher: { id: teacher._id, name, email } });
@@ -37,7 +37,7 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, teacher.password);
     if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials" });
 
-    const payload = { teacher: { id: teacher._id } };
+    const payload = { teacher: { id: teacher._id.toString() } }; // Ensure ID is a string
     const token = jwt.sign(payload, process.env.JWT_SECRET || "my_super_secret_key_123", { expiresIn: "1d" });
 
     res.json({ success: true, token, teacher: { id: teacher._id, name: teacher.name, email: teacher.email } });
@@ -48,13 +48,28 @@ router.post("/login", async (req, res) => {
 
 // @route   GET /api/auth/me
 // @desc    Get logged in teacher's profile
+// @route   GET /api/auth/me
+// @desc    Get logged in teacher's profile
 router.get("/me", auth, async (req, res) => {
   try {
-    const teacher = await Teacher.findById(req.teacher.id).select("-password");
+    // req.teacher is now just the ID string (e.g. '6ab8ff34801dd3ac19a6c853')
+    const teacherId = req.teacher; 
+
+    if (!teacherId) {
+      return res.status(401).json({ success: false, message: "Not authorized" });
+    }
+
+    // Fetch the teacher from the database, but exclude the password field
+    const teacher = await Teacher.findById(teacherId).select("-password");
+    
+    if (!teacher) {
+      return res.status(404).json({ success: false, message: "Teacher not found in database" });
+    }
+
     res.json({ success: true, data: teacher });
   } catch (error) {
+    console.error("Error fetching /me:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
 module.exports = router;

@@ -1,86 +1,48 @@
 const express = require("express");
 const Student = require("../models/Student");
+const auth = require("../middleware/auth"); // ADD THIS
 
 const router = express.Router();
 
-// Get all students
-router.get("/", async (req, res) => {
+// Get all students for logged in teacher
+router.get("/", auth, async (req, res) => { // Add auth
   try {
-    const students = await Student.find().sort({ rollNo: 1 });
+    const students = await Student.find({ teacherId: req.teacher.id }).sort({ rollNo: 1 });
     res.json({ success: true, data: students });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
 // Add a single student
-router.post("/", async (req, res) => {
+router.post("/", auth, async (req, res) => { // Add auth
   try {
-    const { name, rollNo, semester } = req.body;
-
-    if (!name || !rollNo || semester === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, roll number, and semester are required.",
-      });
-    }
-
-    const student = await Student.create({ name, rollNo, semester });
+    const student = await Student.create({ ...req.body, teacherId: req.teacher.id });
     res.status(201).json({ success: true, data: student });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "A student with this roll number already exists.",
-      });
-    }
+    if (error.code === 11000) return res.status(409).json({ success: false, message: "Roll number already exists." });
     res.status(400).json({ success: false, message: error.message });
   }
 });
 
-// BULK ADD students (For Excel Uploads)
-router.post("/bulk", async (req, res) => {
+// BULK ADD students
+router.post("/bulk", auth, async (req, res) => { // Add auth
   try {
-    const { students } = req.body; // Expecting an array of student objects
-    
-    if (!students || !Array.isArray(students) || students.length === 0) {
-      return res.status(400).json({ success: false, message: "No students provided for bulk insert." });
-    }
-
-    // InsertMany with ordered:false will skip duplicates and insert the rest
-    const insertedStudents = await Student.insertMany(students, { ordered: false });
-    
+    const { students } = req.body;
+    const studentsWithTeacher = students.map(s => ({ ...s, teacherId: req.teacher.id }));
+    const insertedStudents = await Student.insertMany(studentsWithTeacher, { ordered: false });
     res.status(201).json({ success: true, data: insertedStudents });
   } catch (error) {
-    // If there are duplicate roll numbers, MongoDB throws an error, but still inserts the non-duplicates.
-    // We check if it's a duplicate error (code 11000) and still return success for the ones that went through.
-    if (error.code === 11000) {
-      return res.status(201).json({ 
-        success: true, 
-        message: "Some students were skipped (duplicate roll numbers), but others were saved.",
-        data: error.insertedDocs || [] 
-      });
-    }
+    if (error.code === 11000) return res.status(201).json({ success: true, data: error.insertedDocs || [] });
     res.status(400).json({ success: false, message: error.message });
   }
 });
 
-// Delete a student by MongoDB ID
-router.delete("/:id", async (req, res) => {
+// Delete a student
+router.delete("/:id", auth, async (req, res) => { // Add auth
   try {
-    const student = await Student.findByIdAndDelete(req.params.id);
-
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: "Student not found.",
-      });
-    }
-
+    const student = await Student.findOneAndDelete({ _id: req.params.id, teacherId: req.teacher.id });
+    if (!student) return res.status(404).json({ success: false, message: "Not found or unauthorized" });
     res.json({ success: true, message: "Student deleted." });
-  } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
-  }
+  } catch (error) { res.status(400).json({ success: false, message: error.message }); }
 });
 
 module.exports = router;

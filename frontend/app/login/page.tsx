@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { loginTeacher } from "@/lib/api";
 import { saveToken } from "@/lib/auth";
@@ -14,10 +15,16 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    
     try {
+      // 1. Call backend to login
       const { token } = await loginTeacher(email, password);
+      
+      // 2. Save the token to localStorage
       saveToken(token);
-      router.push("/");
+      
+      // 3. Navigate to the dashboard
+      router.replace("/");
     } catch (err: any) {
       setError(err.message);
     }
@@ -45,7 +52,9 @@ export default function LoginPage() {
             <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Password</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-md" placeholder="••••••••" required />
           </div>
-          <button type="submit" className="w-full bg-blue-600 text-white p-2.5 rounded-md hover:bg-blue-700 transition-colors font-medium">Sign In</button>
+          <button type="submit" className="w-full bg-blue-600 text-white p-2.5 rounded-md hover:bg-blue-700 transition-colors font-medium">
+            Sign In
+          </button>
         </form>
         
         <p className="text-center text-sm text-slate-500 mt-6">

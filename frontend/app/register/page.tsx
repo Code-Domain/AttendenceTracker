@@ -1,6 +1,7 @@
-"use client";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+"use client"; // This must be the very first line!
+
+import React, { useState } from "react";
+import { useRouter } from "next/navigation"; // App router uses next/navigation
 import { registerTeacher } from "@/lib/api";
 import { saveToken } from "@/lib/auth";
 import { GraduationCap } from "lucide-react";
@@ -39,7 +40,7 @@ export default function RegisterPage() {
           <input type="text" placeholder="Full Name" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
           <input type="email" placeholder="Email Address" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
           <input type="password" placeholder="Password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
-          <input type="text" placeholder="Department (e.g. Computer Science)" value={formData.department} onChange={(e) => setFormData({ ...formData, department: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
+          <input type="text" placeholder="Department" value={formData.department} onChange={(e) => setFormData({ ...formData, department: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
           <input type="text" placeholder="Employee ID" value={formData.employeeId} onChange={(e) => setFormData({ ...formData, employeeId: e.target.value })} className="w-full p-2.5 border border-slate-200 rounded-md" required />
           
           <button type="submit" className="w-full bg-indigo-600 text-white p-2.5 rounded-md hover:bg-indigo-700 transition-colors font-medium">Register</button>
