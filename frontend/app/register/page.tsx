@@ -17,7 +17,7 @@ export default function RegisterPage() {
     try {
       const { token } = await registerTeacher(formData);
       saveToken(token);
-      router.push("/");
+      router.push("/login");
     } catch (err: any) {
       setError(err.message);
     }

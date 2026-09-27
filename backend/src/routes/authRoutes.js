@@ -72,4 +72,22 @@ router.get("/me", auth, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// @route   PUT /api/auth/update/:id
+// @desc    Update teacher profile
+router.put("/update/:id", auth, async (req, res) => {
+  try {
+    const updated = await Teacher.findByIdAndUpdate(
+      req.params.id, 
+      req.body, 
+      { new: true, runValidators: true }
+    ).select("-password");
+    
+    if (!updated) return res.status(404).json({ success: false, message: "Teacher not found" });
+    
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
 module.exports = router;

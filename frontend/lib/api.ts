@@ -23,25 +23,12 @@ export async function loginTeacher(email: string, password: string) {
 }
 
 export async function getMyProfile() {
-  const token = getToken();
-  if (!token) throw new Error("No token found");
-
-  const res = await fetch(`${API_URL}/auth/me`, {
-    headers: { 
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}` 
-    },
-  });
-  
+  const res = await fetch(`${API_URL}/auth/me`, { headers: authHeaders() });
   const result = await res.json();
-  
-  if (!res.ok) {
-    console.error("Profile fetch failed:", result);
-    throw new Error(result.message || "Failed to fetch profile");
-  }
-  
+  if (!res.ok) throw new Error(result.message);
   return result.data;
 }
+
 // --- Student APIs ---
 export async function getStudents() {
   const res = await fetch(`${API_URL}/students`, { headers: authHeaders() });
@@ -101,15 +88,8 @@ export async function removeSchedule(id: string) {
 }
 
 // --- Profile APIs ---
-export async function getProfile() {
-  const res = await fetch(`${API_URL}/teacher`, { headers: authHeaders() });
-  const result = await res.json();
-  if (!res.ok) throw new Error(result.message);
-  return result.data;
-}
-
 export async function updateProfile(id: string, data: any) {
-  const res = await fetch(`${API_URL}/teacher/${id}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(data) });
+  const res = await fetch(`${API_URL}/auth/update/${id}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(data) });
   const result = await res.json();
   if (!res.ok) throw new Error(result.message);
   return result.data;
