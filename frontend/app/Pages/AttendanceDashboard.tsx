@@ -11,8 +11,8 @@ import {
 } from 'lucide-react';
 
 // Assuming your lib/api has these exported
-import { 
-  getStudents, createStudent, removeStudent, createManyStudents, 
+import {
+  getStudents, createStudent, removeStudent, createManyStudents,
   getSchedules, createSchedule, createManySchedules, removeSchedule,
   getMyProfile, updateProfile
 } from "@/lib/api";
@@ -53,21 +53,21 @@ interface ActivityLog {
 // --- Helper: Filter & Sort Students by Roll Range ---
 const getFilteredStudentsForClass = (cls: ScheduleClass | undefined, allStudents: Student[]) => {
   if (!cls) return [];
-  
+
   const parts = cls.rollRange.split(' to ');
   if (parts.length === 2) {
     const startRoll = parts[0].trim();
     const endRoll = parts[1].trim();
-    
+
     // e.g., 2024-CSE-01 to 2024-CSE-20
     const matchStart = startRoll.match(/^(.*?)(\d+)$/);
     const matchEnd = endRoll.match(/^(.*?)(\d+)$/);
-    
+
     if (matchStart && matchEnd && matchStart[1] === matchEnd[1]) {
       const prefix = matchStart[1];
       const startNum = parseInt(matchStart[2], 10);
       const endNum = parseInt(matchEnd[2], 10);
-      
+
       return allStudents.filter(s => {
         const sMatch = s.rollNo.match(/^(.*?)(\d+)$/);
         if (sMatch && sMatch[1] === prefix) {
@@ -85,7 +85,7 @@ const getFilteredStudentsForClass = (cls: ScheduleClass | undefined, allStudents
       });
     }
   }
-  
+
   // Fallback to semester filter if range format is invalid
   return allStudents.filter(s => s.semester === cls.semester).sort((a, b) => a.rollNo.localeCompare(b.rollNo));
 };
@@ -114,7 +114,7 @@ const ErrorModal = ({ show, title, message, onClose, format }: any) => {
 
 export default function AttendanceDashboard() {
   const router = useRouter();
-  
+
   const [activeView, setActiveView] = useState<View>('dashboard');
   const [schedule, setSchedule] = useState<ScheduleClass[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -292,16 +292,16 @@ export default function AttendanceDashboard() {
   const finalizeDay = (classId: string) => {
     const cls = schedule.find(c => c.id === classId);
     if (!cls) return;
-    
+
     let newRecords = [...attendance];
     const classStudents = getFilteredStudentsForClass(cls, students); // Only finalize students within the roll range
-    
+
     classStudents.forEach(stu => {
       if (!newRecords.find(a => a.classId === cls.id && a.studentId === stu.id)) {
         newRecords.push({ classId: cls.id, studentId: stu.id, status: 'Absent', date: new Date().toISOString() });
       }
     });
-    
+
     setAttendance(newRecords);
     logActivity("Attendance Finalized", `Finalized attendance for ${cls.subject}`);
     alert(`Attendance finalized for ${cls.subject}! Unmarked students set to Absent.`);
@@ -310,7 +310,7 @@ export default function AttendanceDashboard() {
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800">
       <ErrorModal show={modal.show} title="Invalid Excel Format" message={`The Excel file you uploaded does not match the required structure.`} format={modal.type === 'schedule' ? ["Day", "Time", "Subject", "Semester", "RollNoRange"] : ["Name", "RollNo", "Semester"]} onClose={() => setModal({ ...modal, show: false })} />
-      
+
       <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col fixed h-full">
         <div className="p-6 flex items-center gap-3 border-b border-slate-800">
           <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white"><GraduationCap size={24} /></div>
@@ -356,9 +356,9 @@ const DashboardView = ({ schedule, students, attendance, recentActivities }: { s
   const todayClasses = schedule.filter((c: ScheduleClass) => c.day === today);
   const presentToday = attendance.filter((a: AttendanceRecord) => a.status === 'Present').length;
   const attendanceRate = presentToday > 0 ? ((presentToday / attendance.length) * 100).toFixed(0) : 0;
-  
+
   // Count unique days per subject to get actual "Classes Taken"
-  const subjectStats = schedule.map((cls: ScheduleClass) => { 
+  const subjectStats = schedule.map((cls: ScheduleClass) => {
     const uniqueDates = new Set(
       attendance
         .filter((a: AttendanceRecord) => a.classId === cls.id)
@@ -371,7 +371,7 @@ const DashboardView = ({ schedule, students, attendance, recentActivities }: { s
   const [viewDate, setViewDate] = useState('');
   const availableDates = viewClassId ? [...new Set(attendance.filter((a: AttendanceRecord) => a.classId === viewClassId).map((a: AttendanceRecord) => a.date.split('T')[0]))] : [];
   const viewClass = schedule.find((c: ScheduleClass) => c.id === viewClassId);
-  
+
   const tableStudents = viewClass ? getFilteredStudentsForClass(viewClass, students) : [];
   const tableRows = tableStudents.map((s: Student) => {
     const rec = attendance.find((a: AttendanceRecord) => a.classId === viewClassId && a.studentId === s.id && a.date.split('T')[0] === viewDate);
@@ -414,19 +414,20 @@ const DashboardView = ({ schedule, students, attendance, recentActivities }: { s
 const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendance, finalizeDay }: any) => {
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   // Dynamic Current Day
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long' });
   const todayClasses = schedule.filter((c: ScheduleClass) => c.day === today);
-  
+
   // Search Filter
-  const filteredClasses = todayClasses.filter(c => 
-    c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.rollRange.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredClasses = todayClasses.filter(
+    (c: ScheduleClass) =>
+      c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.rollRange.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const activeClass = schedule.find((c: ScheduleClass) => c.id === activeClassId);
-  
+
   // Filter Students strictly by Roll Range
   const activeStudents = getFilteredStudentsForClass(activeClass, students);
 
@@ -439,27 +440,27 @@ const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendanc
           </button>
         )}
       </PageHeader>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="lg:col-span-1">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Today's Classes ({today})</h2>
-          
+
           <div className="relative mb-4">
             <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Search class or roll range..." 
-              value={searchQuery} 
-              onChange={e => setSearchQuery(e.target.value)} 
+            <input
+              type="text"
+              placeholder="Search class or roll range..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-md text-sm"
             />
           </div>
 
           <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-2">
             {filteredClasses.length > 0 ? filteredClasses.map((cls: ScheduleClass) => (
-              <button 
-                key={cls.id} 
-                onClick={() => setActiveClassId(cls.id)} 
+              <button
+                key={cls.id}
+                onClick={() => setActiveClassId(cls.id)}
                 className={`w-full text-left p-4 rounded-lg border transition-colors ${activeClassId === cls.id ? 'bg-blue-50 border-blue-200' : 'border-slate-100 hover:bg-slate-50'}`}
               >
                 <h4 className="font-semibold text-slate-800 text-sm">{cls.subject}</h4>
@@ -524,7 +525,7 @@ const ScheduleView = ({ schedule, addClass, deleteClass, handleUpload }: any) =>
     setNewClass({ day: 'Monday', time: '', subject: '', semester: '', rollRange: '' });
     setShowForm(false);
   };
-  
+
   return (
     <div>
       <PageHeader title="Weekly Schedule" subtitle="Manage your class timings and subjects.">
@@ -642,16 +643,51 @@ const ProfileView = ({ profile, setProfile, logActivity }: any) => {
   const handleResetPassword = async () => {
     if (!pwdData.current || !pwdData.new || !pwdData.confirm) { alert("Please fill out all password fields."); return; }
     if (pwdData.new !== pwdData.confirm) { alert("New passwords do not match!"); return; }
-    
+
     try {
-      // Calls backend to update password
-      await updateProfile(profile._id, { password: pwdData.new });
+      // Make sure a new password was entered
+      if (!pwdData.new || !pwdData.confirm) {
+        alert("Please enter and confirm your new password.");
+        return;
+      }
+
+      // Make sure the passwords match
+      if (pwdData.new !== pwdData.confirm) {
+        alert("New password and confirm password do not match.");
+        return;
+      }
+
+      // Make sure the new password is different
+      if (pwdData.current === pwdData.new) {
+        alert("New password must be different from your current password.");
+        return;
+      }
+
+      // Send current + new password to backend
+      await updateProfile(profile._id, {
+        currentPassword: pwdData.current,
+        password: pwdData.new,
+      });
+
       logActivity("Updated Profile", "Password updated successfully.");
-      alert("Password reset successfully!");
-      setPwdData({ current: '', new: '', confirm: '' });
+
+      alert("Password changed successfully!");
+
+      // Clear password fields after successful update
+      setPwdData({
+        current: "",
+        new: "",
+        confirm: "",
+      });
+
     } catch (error) {
-      alert("Failed to reset password.");
+      console.error("Password update error:", error);
+
+      alert(
+        "Failed to change password."
+      );
     }
+
   };
 
   return (
@@ -670,7 +706,7 @@ const ProfileView = ({ profile, setProfile, logActivity }: any) => {
           </div>
         </div>
       </Card>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           <Card>
