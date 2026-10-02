@@ -1,12 +1,13 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const connectDB = require("../src/config/database"); // Make sure this path is correct
+const connectDB = require("./config/database"); // Make sure this path is correct
 
 const studentRoutes = require("./routes/studentRoutes");
 const scheduleRoutes = require("./routes/scheduleRoutes");
 const authRoutes = require("./routes/authRoutes");
-
+const attendanceRoutes = require("./routes/attendanceRoutes");
+const activityRoutes = require("./routes/activityRoutes");
 const app = express();
 
 // Connect to MongoDB
@@ -20,6 +21,8 @@ app.use(express.json());
 app.use("/api/students", studentRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/attendance", attendanceRoutes);
+app.use("/api/activities", activityRoutes);
 
 app.get("/", (req, res) => {
     res.json({

@@ -7,14 +7,15 @@ import { removeToken } from "@/lib/auth";
 import {
   LayoutDashboard, CalendarDays, Users, BarChart3, UserCircle,
   Upload, Plus, Trash2, Check, X, Clock, BookOpen, ClipboardCheck, GraduationCap,
-  AlertCircle, TrendingUp, Calendar, Award, KeyRound, Bell, Monitor, Moon, Table, LogOut, Search
+  AlertCircle, TrendingUp, Calendar, Award, KeyRound, Bell, Monitor, Moon, Table, LogOut, Search, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
-// Assuming your lib/api has these exported
 import {
   getStudents, createStudent, removeStudent, createManyStudents,
   getSchedules, createSchedule, createManySchedules, removeSchedule,
-  getMyProfile, updateProfile
+  getMyProfile, updateProfile,
+  getAttendance, markAttendanceApi, finalizeDayApi,
+  getActivities, logActivityApi // <-- ADD THESE
 } from "@/lib/api";
 
 // --- Types & Interfaces ---
@@ -50,47 +51,57 @@ interface ActivityLog {
   timestamp: string;
 }
 
-// --- Helper: Filter & Sort Students by Roll Range ---
+// --- Strict Roll No Validation ---
+const isValidRollNo = (rollNo: string) => {
+  // Format: YYYY-BRANCH-NN (e.g., 2024-CSE-01)
+  // Branch can be CSE, ME, EE, EC, LT, or just C
+  return /^\d{4}-(CSE|ME|EE|EC|LT|C)-\d{2,3}$/.test(rollNo);
+};
+
+// --- Strictly Filter & Sort Students by Semester, Year, Branch, and Roll Range ---
 const getFilteredStudentsForClass = (cls: ScheduleClass | undefined, allStudents: Student[]) => {
   if (!cls) return [];
+
+  // 1. Strictly filter by Semester first
+  let semesterStudents = allStudents.filter(s => s.semester === cls.semester);
 
   const parts = cls.rollRange.split(' to ');
   if (parts.length === 2) {
     const startRoll = parts[0].trim();
     const endRoll = parts[1].trim();
 
-    // e.g., 2024-CSE-01 to 2024-CSE-20
-    const matchStart = startRoll.match(/^(.*?)(\d+)$/);
-    const matchEnd = endRoll.match(/^(.*?)(\d+)$/);
+    const matchStart = startRoll.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
+    const matchEnd = endRoll.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
 
-    if (matchStart && matchEnd && matchStart[1] === matchEnd[1]) {
-      const prefix = matchStart[1];
-      const startNum = parseInt(matchStart[2], 10);
-      const endNum = parseInt(matchEnd[2], 10);
+    if (matchStart && matchEnd && matchStart[1] === matchEnd[1] && matchStart[2] === matchEnd[2]) {
+      const year = matchStart[1];
+      const branch = matchStart[2];
+      const startNum = parseInt(matchStart[3], 10);
+      const endNum = parseInt(matchEnd[3], 10);
 
-      return allStudents.filter(s => {
-        const sMatch = s.rollNo.match(/^(.*?)(\d+)$/);
-        if (sMatch && sMatch[1] === prefix) {
-          const sNum = parseInt(sMatch[2], 10);
+      return semesterStudents.filter(s => {
+        const sMatch = s.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
+        if (sMatch && sMatch[1] === year && sMatch[2] === branch) {
+          const sNum = parseInt(sMatch[3], 10);
           return sNum >= startNum && sNum <= endNum;
         }
         return false;
       }).sort((a, b) => {
-        const aMatch = a.rollNo.match(/^(.*?)(\d+)$/);
-        const bMatch = b.rollNo.match(/^(.*?)(\d+)$/);
+        const aMatch = a.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
+        const bMatch = b.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
         if (aMatch && bMatch) {
-          return parseInt(aMatch[2], 10) - parseInt(bMatch[2], 10);
+          return parseInt(aMatch[3], 10) - parseInt(bMatch[3], 10);
         }
         return a.rollNo.localeCompare(b.rollNo);
       });
     }
   }
 
-  // Fallback to semester filter if range format is invalid
-  return allStudents.filter(s => s.semester === cls.semester).sort((a, b) => a.rollNo.localeCompare(b.rollNo));
+  // Fallback if roll range format is invalid
+  return semesterStudents.sort((a, b) => a.rollNo.localeCompare(b.rollNo));
 };
 
-// --- Modal Component for Excel Format Errors ---
+// --- Modal Component ---
 const ErrorModal = ({ show, title, message, onClose, format }: any) => {
   if (!show) return null;
   return (
@@ -136,6 +147,23 @@ export default function AttendanceDashboard() {
         const scheduleData = await getSchedules();
         setSchedule(scheduleData.map((c: any) => ({ id: c._id, day: c.day, time: c.time, subject: c.subject, semester: c.semester, rollRange: c.rollRange })));
 
+        const attendanceData = await getAttendance();
+        setAttendance(attendanceData.map((a: any) => ({
+          classId: a.classId,
+          studentId: a.studentId,
+          status: a.status,
+          date: a.date.split('T')[0]
+        })));
+
+        // LOAD ACTIVITIES FROM DATABASE
+        const activityData = await getActivities();
+        setRecentActivities(activityData.map((a: any) => ({
+          id: a._id,
+          action: a.action,
+          details: a.details,
+          timestamp: a.timestamp
+        })));
+
       } catch (error: any) {
         console.error("Loading data failed:", error);
         if (error.message.includes("Token") || error.message.includes("token") || error.message.includes("Invalid")) {
@@ -151,8 +179,21 @@ export default function AttendanceDashboard() {
     router.push("/login");
   };
 
-  const logActivity = (action: string, details: string) => {
-    setRecentActivities(prev => [{ id: `act${Date.now()}`, action, details, timestamp: new Date().toISOString() }, ...prev].slice(0, 10));
+  const logActivity = async (action: string, details: string) => {
+    try {
+      // 1. Save to Database
+      const savedAct = await logActivityApi(action, details);
+
+      // 2. Update Frontend State
+      setRecentActivities(prev => [{
+        id: savedAct._id,
+        action: savedAct.action,
+        details: savedAct.details,
+        timestamp: savedAct.timestamp
+      }, ...prev].slice(0, 10));
+    } catch (error) {
+      console.error("Failed to log activity:", error);
+    }
   };
 
   // --- Excel Upload & Validation ---
@@ -224,6 +265,11 @@ export default function AttendanceDashboard() {
           const name = String(getCellValue(row, "name") || '').trim();
           const rollNo = String(getCellValue(row, "rollno") || '').trim();
           const semester = parseInt(String(getCellValue(row, "semester") || '0')) || 0;
+
+          if (!isValidRollNo(rollNo)) {
+            alert(`Invalid Roll No Format: ${rollNo}. Must be like 2024-CSE-01. Skipping this student.`);
+            continue;
+          }
           if (name && rollNo && semester > 0) parsedStudents.push({ name, rollNo, semester });
         }
 
@@ -273,38 +319,61 @@ export default function AttendanceDashboard() {
     } catch { console.error("Failed to delete student"); }
   };
 
-  const markPresent = (classId: string, studentId: string) => {
-    setAttendance(prev => {
-      const existing = prev.find(a => a.classId === classId && a.studentId === studentId);
-      if (existing) return prev.map(a => a.classId === classId && a.studentId === studentId ? { ...a, status: 'Present' } : a);
-      return [...prev, { classId, studentId, status: 'Present', date: new Date().toISOString() }];
-    });
+  const markPresent = async (classId: string, studentId: string, date?: string) => {
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    try {
+      await markAttendanceApi({ classId, studentId, status: 'Present', date: targetDate });
+      setAttendance(prev => {
+        const existing = prev.find(a => a.classId === classId && a.studentId === studentId && a.date === targetDate);
+        if (existing) return prev.map(a => a.classId === classId && a.studentId === studentId && a.date === targetDate ? { ...a, status: 'Present' } : a);
+        return [...prev, { classId, studentId, status: 'Present', date: targetDate }];
+      });
+    } catch (error) {
+      alert("Failed to mark present in database.");
+    }
   };
 
-  const markAbsent = (classId: string, studentId: string) => {
-    setAttendance(prev => {
-      const existing = prev.find(a => a.classId === classId && a.studentId === studentId);
-      if (existing) return prev.map(a => a.classId === classId && a.studentId === studentId ? { ...a, status: 'Absent' } : a);
-      return [...prev, { classId, studentId, status: 'Absent', date: new Date().toISOString() }];
-    });
+  const markAbsent = async (classId: string, studentId: string, date?: string) => {
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    try {
+      await markAttendanceApi({ classId, studentId, status: 'Absent', date: targetDate });
+      setAttendance(prev => {
+        const existing = prev.find(a => a.classId === classId && a.studentId === studentId && a.date === targetDate);
+        if (existing) return prev.map(a => a.classId === classId && a.studentId === studentId && a.date === targetDate ? { ...a, status: 'Absent' } : a);
+        return [...prev, { classId, studentId, status: 'Absent', date: targetDate }];
+      });
+    } catch (error) {
+      alert("Failed to mark absent in database.");
+    }
   };
 
-  const finalizeDay = (classId: string) => {
+  const finalizeDay = async (classId: string) => {
     const cls = schedule.find(c => c.id === classId);
     if (!cls) return;
 
-    let newRecords = [...attendance];
-    const classStudents = getFilteredStudentsForClass(cls, students); // Only finalize students within the roll range
+    const today = new Date().toISOString().split('T')[0];
+    const classStudents = getFilteredStudentsForClass(cls, students);
+    const recordsToFinalize: any[] = [];
 
     classStudents.forEach(stu => {
-      if (!newRecords.find(a => a.classId === cls.id && a.studentId === stu.id)) {
-        newRecords.push({ classId: cls.id, studentId: stu.id, status: 'Absent', date: new Date().toISOString() });
+      if (!attendance.find(a => a.classId === cls.id && a.studentId === stu.id && a.date === today)) {
+        recordsToFinalize.push({ classId: cls.id, studentId: stu.id, date: today });
       }
     });
 
-    setAttendance(newRecords);
-    logActivity("Attendance Finalized", `Finalized attendance for ${cls.subject}`);
-    alert(`Attendance finalized for ${cls.subject}! Unmarked students set to Absent.`);
+    if (recordsToFinalize.length === 0) {
+      alert("All students are already marked!");
+      return;
+    }
+
+    try {
+      await finalizeDayApi(recordsToFinalize);
+      setAttendance(prev => [...prev, ...recordsToFinalize.map(rec => ({ ...rec, status: 'Absent' }))]);
+      logActivity("Attendance Finalized", `Finalized attendance for ${cls.subject}`);
+      alert(`Attendance finalized for ${cls.subject}! Unmarked students set to Absent.`);
+    } catch (error) {
+      alert("Failed to finalize attendance in database.");
+    }
   };
 
   return (
@@ -357,25 +426,13 @@ const DashboardView = ({ schedule, students, attendance, recentActivities }: { s
   const presentToday = attendance.filter((a: AttendanceRecord) => a.status === 'Present').length;
   const attendanceRate = presentToday > 0 ? ((presentToday / attendance.length) * 100).toFixed(0) : 0;
 
-  // Count unique days per subject to get actual "Classes Taken"
   const subjectStats = schedule.map((cls: ScheduleClass) => {
     const uniqueDates = new Set(
       attendance
         .filter((a: AttendanceRecord) => a.classId === cls.id)
-        .map((a: AttendanceRecord) => a.date.split('T')[0]) // Extract date part YYYY-MM-DD
+        .map((a: AttendanceRecord) => a.date.split('T')[0])
     );
     return { subject: cls.subject, count: uniqueDates.size };
-  });
-
-  const [viewClassId, setViewClassId] = useState('');
-  const [viewDate, setViewDate] = useState('');
-  const availableDates = viewClassId ? [...new Set(attendance.filter((a: AttendanceRecord) => a.classId === viewClassId).map((a: AttendanceRecord) => a.date.split('T')[0]))] : [];
-  const viewClass = schedule.find((c: ScheduleClass) => c.id === viewClassId);
-
-  const tableStudents = viewClass ? getFilteredStudentsForClass(viewClass, students) : [];
-  const tableRows = tableStudents.map((s: Student) => {
-    const rec = attendance.find((a: AttendanceRecord) => a.classId === viewClassId && a.studentId === s.id && a.date.split('T')[0] === viewDate);
-    return { ...s, status: rec?.status || 'Unmarked' };
   });
 
   return (
@@ -391,44 +448,24 @@ const DashboardView = ({ schedule, students, attendance, recentActivities }: { s
         <Card><h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2"><BookOpen size={20} /> Classes Taken Per Subject</h2><div className="space-y-3">{subjectStats.length > 0 ? subjectStats.map((stat, i) => (<div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100"><span className="font-medium text-sm text-slate-700">{stat.subject}</span><span className="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-700">{stat.count} Classes</span></div>)) : <p className="text-sm text-slate-500 text-center py-4">No schedule data available.</p>}</div></Card>
         <Card><h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2"><ClipboardCheck size={20} /> Recent Activity</h2><div className="space-y-4 max-h-72 overflow-y-auto pr-2">{recentActivities.length > 0 ? recentActivities.map((act) => (<div key={act.id} className="flex items-center gap-3 text-sm border-b border-slate-50 pb-2"><div className="w-8 h-8 rounded-full flex items-center justify-center bg-indigo-100 text-indigo-600"><TrendingUp size={14} /></div><div className="flex-1"><p className="font-medium text-slate-700">{act.action}</p><p className="text-xs text-slate-500">{act.details}</p></div><span className="text-xs text-slate-400">{new Date(act.timestamp).toLocaleTimeString()}</span></div>)) : <p className="text-sm text-slate-500 text-center py-4">No recent activity.</p>}</div></Card>
       </div>
-      <Card>
-        <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2"><Table size={20} /> Attendance Sheet Viewer</h2>
-        <div className="flex flex-col md:flex-row gap-4 mb-6">
-          <select value={viewClassId} onChange={e => { setViewClassId(e.target.value); setViewDate(''); }} className="border border-slate-200 p-2 rounded-md bg-white text-sm flex-1"><option value="">-- Select Subject --</option>{schedule.map((cls) => <option key={cls.id} value={cls.id}>{cls.subject} (Sem {cls.semester})</option>)}</select>
-          <select value={viewDate} onChange={e => setViewDate(e.target.value)} disabled={!viewClassId} className="border border-slate-200 p-2 rounded-md bg-white text-sm flex-1 disabled:bg-slate-100"><option value="">-- Select Date --</option>{availableDates.map((d) => <option key={d} value={d}>{d}</option>)}</select>
-        </div>
-        <div className="overflow-x-auto border border-slate-100 rounded-lg">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-50"><tr><th className="p-4 text-xs font-semibold text-slate-500 uppercase">Roll No</th><th className="p-4 text-xs font-semibold text-slate-500 uppercase">Student Name</th><th className="p-4 text-xs font-semibold text-slate-500 uppercase text-right">Status</th></tr></thead>
-            <tbody>
-              {viewClassId && viewDate ? tableRows.map((stu) => (<tr key={stu.id} className="border-b border-slate-100"><td className="p-4 text-sm font-medium text-slate-700">{stu.rollNo}</td><td className="p-4 text-sm text-slate-800">{stu.name}</td><td className="p-4 text-right"><span className={`px-2.5 py-1 rounded-full text-xs font-medium ${stu.status === 'Present' ? 'bg-green-100 text-green-700' : stu.status === 'Absent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'}`}>{stu.status}</span></td></tr>)) : <tr><td colSpan={3} className="p-8 text-center text-sm text-slate-500">Please select a Subject and Date to view the attendance table.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </Card>
     </div>
   );
 };
 
-// --- Attendance View (Dynamic Day, Search, Specific Finalize) ---
+// --- Attendance View ---
 const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendance, finalizeDay }: any) => {
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Dynamic Current Day
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long' });
   const todayClasses = schedule.filter((c: ScheduleClass) => c.day === today);
 
-  // Search Filter
-  const filteredClasses = todayClasses.filter(
-    (c: ScheduleClass) =>
-      c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.rollRange.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredClasses = todayClasses.filter((c: ScheduleClass) =>
+    c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.rollRange.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const activeClass = schedule.find((c: ScheduleClass) => c.id === activeClassId);
-
-  // Filter Students strictly by Roll Range
   const activeStudents = getFilteredStudentsForClass(activeClass, students);
 
   return (
@@ -444,25 +481,13 @@ const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendanc
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="lg:col-span-1">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Today's Classes ({today})</h2>
-
           <div className="relative mb-4">
             <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search class or roll range..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-md text-sm"
-            />
+            <input type="text" placeholder="Search class or roll range..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-md text-sm" />
           </div>
-
           <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-2">
             {filteredClasses.length > 0 ? filteredClasses.map((cls: ScheduleClass) => (
-              <button
-                key={cls.id}
-                onClick={() => setActiveClassId(cls.id)}
-                className={`w-full text-left p-4 rounded-lg border transition-colors ${activeClassId === cls.id ? 'bg-blue-50 border-blue-200' : 'border-slate-100 hover:bg-slate-50'}`}
-              >
+              <button key={cls.id} onClick={() => setActiveClassId(cls.id)} className={`w-full text-left p-4 rounded-lg border transition-colors ${activeClassId === cls.id ? 'bg-blue-50 border-blue-200' : 'border-slate-100 hover:bg-slate-50'}`}>
                 <h4 className="font-semibold text-slate-800 text-sm">{cls.subject}</h4>
                 <p className="text-xs text-slate-500 mt-1">Sem {cls.semester} • {cls.time}</p>
                 <p className="text-xs text-slate-400 mt-1 truncate">Roll: {cls.rollRange}</p>
@@ -475,23 +500,18 @@ const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendanc
           {activeClass ? (
             <>
               <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">{activeClass.subject}</h2>
-                  <p className="text-sm text-slate-500">Semester {activeClass.semester} • {activeClass.rollRange}</p>
-                </div>
+                <div><h2 className="text-lg font-bold text-slate-900">{activeClass.subject}</h2><p className="text-sm text-slate-500">Semester {activeClass.semester} • {activeClass.rollRange}</p></div>
                 <span className="text-xs font-medium px-3 py-1 bg-slate-100 text-slate-600 rounded-full">{activeStudents.length} Students</span>
               </div>
               <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-2">
                 {activeStudents.map((stu: Student) => {
-                  const record = attendance.find((a: AttendanceRecord) => a.classId === activeClass.id && a.studentId === stu.id);
+                  const todayDate = new Date().toISOString().split('T')[0];
+                  const record = attendance.find((a: AttendanceRecord) => a.classId === activeClass.id && a.studentId === stu.id && a.date === todayDate);
                   return (
                     <div key={stu.id} className="flex items-center justify-between p-3 border border-slate-100 rounded-lg">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-sm">{stu.name.charAt(0)}</div>
-                        <div>
-                          <p className="font-medium text-slate-800 text-sm">{stu.name}</p>
-                          <p className="text-xs text-slate-500">{stu.rollNo}</p>
-                        </div>
+                        <div><p className="font-medium text-slate-800 text-sm">{stu.name}</p><p className="text-xs text-slate-500">{stu.rollNo}</p></div>
                       </div>
                       <div className="flex gap-2">
                         <button onClick={() => markPresent(activeClass.id, stu.id)} className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${record?.status === 'Present' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Present</button>
@@ -518,6 +538,7 @@ const AttendanceView = ({ schedule, students, markPresent, markAbsent, attendanc
 const ScheduleView = ({ schedule, addClass, deleteClass, handleUpload }: any) => {
   const [showForm, setShowForm] = useState(false);
   const [newClass, setNewClass] = useState({ day: 'Monday', time: '', subject: '', semester: '', rollRange: '' });
+  const [searchQuery, setSearchQuery] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -526,12 +547,26 @@ const ScheduleView = ({ schedule, addClass, deleteClass, handleUpload }: any) =>
     setShowForm(false);
   };
 
+  const filteredSchedule = schedule.filter((c: ScheduleClass) =>
+    c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.day.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.rollRange.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div>
       <PageHeader title="Weekly Schedule" subtitle="Manage your class timings and subjects.">
         <label className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-50 flex items-center gap-2 text-sm font-medium transition-colors"><Upload size={16} /> Upload Excel<input type="file" accept=".xlsx,.xls" onChange={handleUpload} className="hidden" /></label>
         <button onClick={() => setShowForm(!showForm)} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 text-sm font-medium transition-colors"><Plus size={16} /> Add Class</button>
       </PageHeader>
+
+      <Card className="mb-6">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+          <input type="text" placeholder="Search schedule..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-md text-sm" />
+        </div>
+      </Card>
+
       {showForm && (
         <Card className="mb-6">
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -545,9 +580,9 @@ const ScheduleView = ({ schedule, addClass, deleteClass, handleUpload }: any) =>
         </Card>
       )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {schedule.length > 0 ? schedule.map((cls: ScheduleClass) => (
+        {filteredSchedule.length > 0 ? filteredSchedule.map((cls: ScheduleClass) => (
           <Card key={cls.id}><div className="flex justify-between items-start"><div className="flex gap-4"><div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center text-blue-600"><BookOpen size={20} /></div><div><h3 className="font-bold text-slate-900">{cls.subject}</h3><div className="flex flex-col gap-1 text-xs text-slate-500 mt-1"><span className="flex items-center gap-1"><CalendarDays size={12} /> {cls.day} • {cls.time}</span><span className="flex items-center gap-1"><Users size={12} /> Sem {cls.semester} • Roll: {cls.rollRange}</span></div></div></div><button onClick={() => deleteClass(cls.id)} className="text-slate-400 hover:text-red-500 p-2 rounded transition-colors"><Trash2 size={16} /></button></div></Card>
-        )) : <p className="text-slate-500 col-span-2 text-center py-8">No classes scheduled. Upload an Excel sheet or add manually.</p>}
+        )) : <p className="text-slate-500 col-span-2 text-center py-8">No classes found matching your search.</p>}
       </div>
     </div>
   );
@@ -557,36 +592,77 @@ const ScheduleView = ({ schedule, addClass, deleteClass, handleUpload }: any) =>
 const StudentsView = ({ students, addStudent, deleteStudent, handleUpload }: any) => {
   const [showForm, setShowForm] = useState(false);
   const [newStudent, setNewStudent] = useState({ name: '', rollNo: '', semester: '' });
+  const [searchQuery, setSearchQuery] = useState('');
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^\d{4}-[A-Z]{2,4}-\d{2}$/.test(newStudent.rollNo)) { alert("Invalid Roll No Format. Must be like 2024-CSE-03"); return; }
+    if (!isValidRollNo(newStudent.rollNo)) { alert("Invalid Roll No Format. Must be like 2024-CSE-03 (Branches: CSE, ME, EE, EC, LT, C)"); return; }
     try {
       await addStudent(newStudent);
       setNewStudent({ name: "", rollNo: "", semester: "" });
       setShowForm(false);
     } catch { alert("Could not save student"); }
   };
+
+  const filteredStudents = students.filter((s: Student) =>
+    s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    s.rollNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    `semester ${s.semester}`.includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div>
       <PageHeader title="Student Directory" subtitle="Manage all students under your tutelage.">
         <label className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-50 flex items-center gap-2 text-sm font-medium transition-colors"><Upload size={16} /> Upload Excel<input type="file" accept=".xlsx,.xls" onChange={handleUpload} className="hidden" /></label>
         <button onClick={() => setShowForm(!showForm)} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 text-sm font-medium transition-colors"><Plus size={16} /> Add Student</button>
       </PageHeader>
+
+      <Card className="mb-6">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+          <input type="text" placeholder="Search by name, roll no, or semester..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-md text-sm" />
+        </div>
+      </Card>
+
       {showForm && (<Card className="mb-6"><form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4"><input type="text" placeholder="Full Name" value={newStudent.name} onChange={e => setNewStudent({ ...newStudent, name: e.target.value })} className="border border-slate-200 p-2 rounded-md text-sm" required /><input type="text" placeholder="Roll No (e.g., 2024-CSE-03)" value={newStudent.rollNo} onChange={e => setNewStudent({ ...newStudent, rollNo: e.target.value })} className="border border-slate-200 p-2 rounded-md text-sm" required /><input type="number" placeholder="Semester" value={newStudent.semester} onChange={e => setNewStudent({ ...newStudent, semester: e.target.value })} className="border border-slate-200 p-2 rounded-md text-sm" required /><button type="submit" className="bg-green-600 text-white p-2 rounded-md text-sm font-medium hover:bg-green-700">Save Student</button></form></Card>)}
-      <Card><div className="overflow-x-auto"><table className="w-full text-left border-collapse"><thead><tr className="border-b border-slate-200"><th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Roll No</th><th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Name</th><th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Semester</th><th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Action</th></tr></thead><tbody>{students.length > 0 ? students.map((stu: Student) => (<tr key={stu.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors"><td className="p-4 text-sm font-medium text-slate-700">{stu.rollNo}</td><td className="p-4 text-sm text-slate-800">{stu.name}</td><td className="p-4 text-sm text-slate-600">Semester {stu.semester}</td><td className="p-4 text-right"><button onClick={() => deleteStudent(stu.id)} className="text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={16} /></button></td></tr>)) : <tr><td colSpan={4} className="p-8 text-center text-slate-500">No students found. Upload an Excel sheet or add manually.</td></tr>}</tbody></table></div></Card>
+
+      <Card className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Roll No</th>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Name</th>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Semester</th>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStudents.length > 0 ? filteredStudents.map((stu: Student) => (
+                <tr key={stu.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                  <td className="p-4 text-sm font-medium text-slate-700">{stu.rollNo}</td>
+                  <td className="p-4 text-sm text-slate-800">{stu.name}</td>
+                  <td className="p-4 text-sm text-slate-600">Semester {stu.semester}</td>
+                  <td className="p-4 text-right">
+                    <button onClick={() => deleteStudent(stu.id)} className="text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={16} /></button>
+                  </td>
+                </tr>
+              )) : <tr><td colSpan={4} className="p-8 text-center text-slate-500">No students found matching your search.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 };
 
-// --- Analytics View ---
+// --- Analytics View (Student & Subject-wise Register with Calendar) ---
 const AnalyticsView = ({ students, schedule, attendance }: any) => {
-  const [selectedName, setSelectedName] = useState<string>('');
-  const [selectedSem, setSelectedSem] = useState<number | ''>('');
-  const [selectedRoll, setSelectedRoll] = useState<string>('');
-  const uniqueNames = Array.from(new Set(students.map((s: Student) => s.name))) as string[];
-  const uniqueSemesters = Array.from(new Set(students.filter((s: Student) => s.name === selectedName).map((s: Student) => s.semester))) as number[];
-  const availableRolls = students.filter((s: Student) => s.name === selectedName && s.semester === selectedSem).map((s: Student) => s.rollNo) as string[];
-  const targetStudent = students.find((s: Student) => s.name === selectedName && s.semester === selectedSem && s.rollNo === selectedRoll);
+  const [analyticsType, setAnalyticsType] = useState<'student' | 'subject'>('student');
+
+  // Student Analytics State
+  const [selectedStudentId, setSelectedStudentId] = useState('');
+  const targetStudent = students.find((s: Student) => s.id === selectedStudentId);
   const studentStats = (() => {
     if (!targetStudent) return null;
     const studentRecords = attendance.filter((a: AttendanceRecord) => a.studentId === targetStudent.id);
@@ -596,29 +672,90 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
     return { ...targetStudent, presentCount, totalClasses, percentage };
   })();
 
+  // Subject Analytics State
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [calMonth, setCalMonth] = useState(new Date().getMonth());
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+
+  const subjectStats = schedule.map((cls: ScheduleClass) => {
+    const uniqueDates = new Set(attendance.filter((a: AttendanceRecord) => a.classId === cls.id).map((a: AttendanceRecord) => a.date.split('T')[0]));
+    return { subject: cls.subject, count: uniqueDates.size };
+  });
+
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const firstDayOfMonth = new Date(calYear, calMonth, 1).getDay();
+
   return (
     <div>
-      <PageHeader title="Analytics" subtitle="Deep dive into individual student performance." />
-      <Card className="mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-          <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">1. Select Name</label><select value={selectedName} onChange={e => { setSelectedName(e.target.value); setSelectedSem(''); setSelectedRoll(''); }} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"><option value="">-- Choose Name --</option>{uniqueNames.map(name => <option key={name} value={name}>{name}</option>)}</select></div>
-          <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">2. Select Semester</label><select value={selectedSem} onChange={e => { setSelectedSem(parseInt(e.target.value)); setSelectedRoll(''); }} disabled={!selectedName} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"><option value="">-- Choose Sem --</option>{uniqueSemesters.map(sem => <option key={sem} value={sem}>{sem}</option>)}</select></div>
-          <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">3. Select Roll No</label><select value={selectedRoll} onChange={e => setSelectedRoll(e.target.value)} disabled={!selectedSem} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"><option value="">-- Choose Roll --</option>{availableRolls.map(roll => <option key={roll} value={roll}>{roll}</option>)}</select></div>
-        </div>
-      </Card>
-      {studentStats && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="md:col-span-1 flex flex-col items-center justify-center text-center bg-gradient-to-br from-blue-600 to-blue-800 text-white"><div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center text-3xl font-bold mb-4 backdrop-blur-sm">{studentStats.name.charAt(0)}</div><h3 className="text-xl font-bold">{studentStats.name}</h3><p className="text-sm text-blue-200 mt-1">{studentStats.rollNo}</p><span className="mt-4 px-4 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-medium">Semester {studentStats.semester}</span></Card>
-          <Card><div className="text-slate-500 text-sm font-medium mb-1">Classes Attended</div><div className="text-3xl font-bold text-slate-900">{studentStats.presentCount} <span className="text-base text-slate-400 font-normal">/ {studentStats.totalClasses}</span></div></Card>
-          <Card><div className="text-slate-500 text-sm font-medium mb-1">Attendance %</div><div className={`text-3xl font-bold ${studentStats.percentage > 75 ? 'text-green-600' : 'text-red-600'}`}>{studentStats.percentage.toFixed(1)}%</div></Card>
-          <Card className="md:col-span-3"><h3 className="font-bold text-slate-900 mb-4">Attendance History</h3><div className="space-y-2">{attendance.filter((a: AttendanceRecord) => a.studentId === studentStats.id).map((a: AttendanceRecord, i: number) => { const cls = schedule.find((c: ScheduleClass) => c.id === a.classId); return (<div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-md border border-slate-100"><span className="font-medium text-sm text-slate-700">{cls?.subject || 'Unknown Class'}</span><span className={`px-2.5 py-1 rounded-full text-xs font-medium ${a.status === 'Present' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{a.status}</span></div>); })}{attendance.filter((a: AttendanceRecord) => a.studentId === studentStats.id).length === 0 && <p className="text-sm text-slate-500 text-center py-4">No records found.</p>}</div></Card>
-        </div>
+      <PageHeader title="Analytics" subtitle="Deep dive into individual student or subject performance." />
+
+      <div className="flex gap-4 mb-6 border-b">
+        <button onClick={() => setAnalyticsType('student')} className={`px-4 py-2 text-sm font-medium ${analyticsType === 'student' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500'}`}>Student Analytics</button>
+        <button onClick={() => setAnalyticsType('subject')} className={`px-4 py-2 text-sm font-medium ${analyticsType === 'subject' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500'}`}>Subject Register (Calendar)</button>
+      </div>
+
+      {analyticsType === 'student' ? (
+        <Card className="mb-6">
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Select Student</label>
+            <select value={selectedStudentId} onChange={e => setSelectedStudentId(e.target.value)} className="w-full md:w-1/3 border border-slate-200 p-2 rounded-md bg-white text-sm">
+              <option value="">-- Choose Student --</option>
+              {students.map((s: Student) => <option key={s.id} value={s.id}>{s.name} ({s.rollNo})</option>)}
+            </select>
+          </div>
+
+          {studentStats ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <Card className="md:col-span-1 flex flex-col items-center justify-center text-center bg-gradient-to-br from-blue-600 to-blue-800 text-white"><div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center text-3xl font-bold mb-4 backdrop-blur-sm">{studentStats.name.charAt(0)}</div><h3 className="text-xl font-bold">{studentStats.name}</h3><p className="text-sm text-blue-200 mt-1">{studentStats.rollNo}</p><span className="mt-4 px-4 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-medium">Semester {studentStats.semester}</span></Card>
+              <Card><div className="text-slate-500 text-sm font-medium mb-1">Classes Attended</div><div className="text-3xl font-bold text-slate-900">{studentStats.presentCount} <span className="text-base text-slate-400 font-normal">/ {studentStats.totalClasses}</span></div></Card>
+              <Card><div className="text-slate-500 text-sm font-medium mb-1">Attendance %</div><div className={`text-3xl font-bold ${studentStats.percentage > 75 ? 'text-green-600' : 'text-red-600'}`}>{studentStats.percentage.toFixed(1)}%</div></Card>
+              <Card className="md:col-span-3"><h3 className="font-bold text-slate-900 mb-4">Attendance History</h3><div className="space-y-2">{attendance.filter((a: AttendanceRecord) => a.studentId === studentStats.id).map((a: AttendanceRecord, i: number) => { const cls = schedule.find((c: ScheduleClass) => c.id === a.classId); return (<div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-md border border-slate-100"><span className="font-medium text-sm text-slate-700">{cls?.subject || 'Unknown Class'} ({a.date})</span><span className={`px-2.5 py-1 rounded-full text-xs font-medium ${a.status === 'Present' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{a.status}</span></div>); })}{attendance.filter((a: AttendanceRecord) => a.studentId === studentStats.id).length === 0 && <p className="text-sm text-slate-500 text-center py-4">No records found.</p>}</div></Card>
+            </div>
+          ) : <p className="text-slate-500 text-center py-8">Select a student to view analytics.</p>}
+        </Card>
+      ) : (
+        <Card>
+          <div className="flex flex-col md:flex-row gap-4 mb-6">
+            <select value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)} className="w-full md:w-1/3 border border-slate-200 p-2 rounded-md bg-white text-sm">
+              <option value="">-- Select Subject --</option>
+              {schedule.map((cls: ScheduleClass) => <option key={cls.id} value={cls.id}>{cls.subject} (Sem {cls.semester})</option>)}
+            </select>
+          </div>
+
+          {selectedClassId ? (
+            <>
+              <div className="flex items-center justify-between mb-4">
+                <button onClick={() => setCalMonth(prev => prev === 0 ? 11 : prev - 1)} className="p-2 hover:bg-slate-100 rounded"><ChevronLeft size={20} /></button>
+                <h3 className="text-lg font-bold">{new Date(calYear, calMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</h3>
+                <button onClick={() => setCalMonth(prev => prev === 11 ? 0 : prev + 1)} className="p-2 hover:bg-slate-100 rounded"><ChevronRight size={20} /></button>
+              </div>
+
+              <div className="grid grid-cols-7 gap-1 text-center text-xs font-semibold text-slate-500 mb-2">
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d}>{d}</div>)}
+              </div>
+
+              <div className="grid grid-cols-7 gap-1">
+                {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} className="aspect-square"></div>)}
+                {Array.from({ length: daysInMonth }).map((_, i) => {
+                  const day = i + 1;
+                  const dateStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  const hasClass = attendance.some((a: AttendanceRecord) => a.classId === selectedClassId && a.date.split('T')[0] === dateStr);
+                  return (
+                    <div key={day} className={`aspect-square flex items-center justify-center text-xs rounded-md ${hasClass ? 'bg-blue-600 text-white font-bold' : 'bg-slate-100 text-slate-400'}`}>
+                      {day}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : <p className="text-slate-500 text-center py-8">Select a subject to view its calendar register.</p>}
+        </Card>
       )}
     </div>
   );
 };
 
-// --- Profile View (Fully Wired Up with Password API) ---
+// --- Profile View ---
 const ProfileView = ({ profile, setProfile, logActivity }: any) => {
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState(profile || {});
@@ -628,66 +765,97 @@ const ProfileView = ({ profile, setProfile, logActivity }: any) => {
 
   if (!profile) return <div className="p-8 text-slate-500">Loading profile...</div>;
 
+  // const handleSaveBiodata = async () => {
+  //   try {
+  //     // Strictly build the data object to send to the backend
+  //     const dataToSave = {
+  //       name: formData?.name || profile.name,
+  //       email: formData?.email || profile.email,
+  //       department: formData?.department || profile.department,
+  //       employeeId: formData?.employeeId || profile.employeeId,
+  //       phone: formData?.phone || profile.phone
+  //     };
+
+  //     const updated = await updateProfile(profile._id, dataToSave);
+
+  //     if (updated) {
+  //       setProfile(updated);
+  //       setIsEditing(false);
+  //       logActivity("Updated Profile", "Biodata saved successfully.");
+  //       alert("Profile saved successfully to database!");
+  //     } else {
+  //       alert("Failed to save profile: Backend returned no data.");
+  //     }
+  //   } catch (error: any) {
+  //     console.error("Profile save error:", error);
+  //     alert(`Failed to save profile: ${error.message}`);
+  //   }
+  // };
+
+  // const handleResetPassword = async () => {
+  //   if (!pwdData.current || !pwdData.new || !pwdData.confirm) { alert("Please fill out all password fields."); return; }
+  //   if (pwdData.new !== pwdData.confirm) { alert("New passwords do not match!"); return; }
+  //   if (pwdData.current === pwdData.new) { alert("New password must be different from your current password."); return; }
+
+  //   try {
+  //     await updateProfile(profile._id, { currentPassword: pwdData.current, password: pwdData.new });
+  //     logActivity("Updated Profile", "Password updated successfully.");
+  //     alert("Password changed successfully!");
+  //     setPwdData({ current: "", new: "", confirm: "" });
+  //   } catch (error) {
+  //     alert("Failed to change password.");
+  //   }
+  // };
+
   const handleSaveBiodata = async () => {
     try {
-      const updated = await updateProfile(profile._id, formData);
-      setProfile(updated);
-      setIsEditing(false);
-      logActivity("Updated Profile", "Biodata saved successfully.");
-      alert("Profile saved successfully!");
-    } catch (error) {
-      alert("Failed to save profile. Make sure your backend route is set up.");
+      const dataToSave = {
+        name: formData?.name || profile.name,
+        email: formData?.email || profile.email,
+        department: formData?.department || profile.department,
+        employeeId: formData?.employeeId || profile.employeeId,
+        phone: formData?.phone || profile.phone
+      };
+
+      const updated = await updateProfile(profile._id, dataToSave);
+
+      if (updated) {
+        setProfile(updated);
+        setIsEditing(false);
+        logActivity("Updated Profile", "Biodata saved successfully.");
+        alert("Profile saved successfully to database!");
+      } else {
+        alert("Failed to save profile: Backend returned no data.");
+      }
+    } catch (error: any) {
+      console.error("Profile save error:", error);
+      alert(`Failed to save profile: ${error.message}`);
     }
   };
 
   const handleResetPassword = async () => {
-    if (!pwdData.current || !pwdData.new || !pwdData.confirm) { alert("Please fill out all password fields."); return; }
-    if (pwdData.new !== pwdData.confirm) { alert("New passwords do not match!"); return; }
+    if (!pwdData.current || !pwdData.new || !pwdData.confirm) {
+      alert("Please fill out all password fields.");
+      return;
+    }
+    if (pwdData.new !== pwdData.confirm) {
+      alert("New passwords do not match!");
+      return;
+    }
 
     try {
-      // Make sure a new password was entered
-      if (!pwdData.new || !pwdData.confirm) {
-        alert("Please enter and confirm your new password.");
-        return;
-      }
-
-      // Make sure the passwords match
-      if (pwdData.new !== pwdData.confirm) {
-        alert("New password and confirm password do not match.");
-        return;
-      }
-
-      // Make sure the new password is different
-      if (pwdData.current === pwdData.new) {
-        alert("New password must be different from your current password.");
-        return;
-      }
-
-      // Send current + new password to backend
       await updateProfile(profile._id, {
         currentPassword: pwdData.current,
-        password: pwdData.new,
+        password: pwdData.new
       });
 
       logActivity("Updated Profile", "Password updated successfully.");
-
       alert("Password changed successfully!");
-
-      // Clear password fields after successful update
-      setPwdData({
-        current: "",
-        new: "",
-        confirm: "",
-      });
-
-    } catch (error) {
+      setPwdData({ current: "", new: "", confirm: "" });
+    } catch (error: any) {
       console.error("Password update error:", error);
-
-      alert(
-        "Failed to change password."
-      );
+      alert(`Failed to change password: ${error.message}`);
     }
-
   };
 
   return (
@@ -717,7 +885,7 @@ const ProfileView = ({ profile, setProfile, logActivity }: any) => {
               <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Department</label><input type="text" value={formData?.department || ''} disabled={!isEditing} onChange={e => setFormData({ ...formData, department: e.target.value })} className={`w-full p-2.5 border rounded-md text-sm ${!isEditing ? 'bg-slate-50 border-slate-100 text-slate-700' : 'border-blue-300 bg-white'}`} /></div>
               <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Employee ID</label><input type="text" value={formData?.employeeId || ''} disabled={!isEditing} onChange={e => setFormData({ ...formData, employeeId: e.target.value })} className={`w-full p-2.5 border rounded-md text-sm ${!isEditing ? 'bg-slate-50 border-slate-100 text-slate-700' : 'border-blue-300 bg-white'}`} /></div>
               <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Phone Number</label><input type="text" value={formData?.phone || ''} disabled={!isEditing} onChange={e => setFormData({ ...formData, phone: e.target.value })} className={`w-full p-2.5 border rounded-md text-sm ${!isEditing ? 'bg-slate-50 border-slate-100 text-slate-700' : 'border-blue-300 bg-white'}`} /></div>
-              <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Join Date</label><input type="text" value={formData?.joinDate || ''} disabled className="w-full p-2.5 border rounded-md text-sm bg-slate-50 border-slate-100 text-slate-700" /></div>
+              <div><label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Join Date</label><input type="text" value={formData?.joinDate ? new Date(formData.joinDate).toLocaleDateString() : ''} disabled className="w-full p-2.5 border rounded-md text-sm bg-slate-50 border-slate-100 text-slate-700" /></div>
             </div>
             {isEditing && <button onClick={handleSaveBiodata} className="mt-6 bg-blue-600 text-white px-6 py-2.5 rounded-lg hover:bg-blue-700 text-sm font-medium flex items-center gap-2"><Check size={16} /> Save Changes</button>}
           </Card>
