@@ -53,13 +53,25 @@ interface ActivityLog {
 
 // --- Strict Roll No Validation ---
 const isValidRollNo = (rollNo: string) => {
-  return /^\d{4}-(CSE|ME|EE|EC|LT|C)-\d{2,3}$/.test(rollNo);
+  return /^\d{4}-(CSE|ME|EE|EC|LT|C)(LE)?-\d{2,3}$/.test(rollNo);
+};
+
+const parseRollNo = (rollNo: string) => {
+  const match = rollNo.match(/^(\d{4})-([A-Z]+)(LE)?-(\d+)$/);
+  if (!match) return null;
+  return {
+    year: match[1],
+    branch: match[2],
+    isLE: match[3] === 'LE',
+    num: parseInt(match[4], 10)
+  };
 };
 
 // --- Strictly Filter & Sort Students by Semester, Year, Branch, and Roll Range ---
 const getFilteredStudentsForClass = (cls: ScheduleClass | undefined, allStudents: Student[]) => {
   if (!cls) return [];
 
+  // 1. Strictly filter by Semester first
   let semesterStudents = allStudents.filter((s: Student) => s.semester === cls.semester);
 
   const parts = cls.rollRange.split(' to ');
@@ -67,33 +79,46 @@ const getFilteredStudentsForClass = (cls: ScheduleClass | undefined, allStudents
     const startRoll = parts[0].trim();
     const endRoll = parts[1].trim();
 
-    const matchStart = startRoll.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
-    const matchEnd = endRoll.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
+    const startMatch = parseRollNo(startRoll);
+    const endMatch = parseRollNo(endRoll);
 
-    if (matchStart && matchEnd && matchStart[1] === matchEnd[1] && matchStart[2] === matchEnd[2]) {
-      const year = matchStart[1];
-      const branch = matchStart[2];
-      const startNum = parseInt(matchStart[3], 10);
-      const endNum = parseInt(matchEnd[3], 10);
+    if (startMatch && endMatch && startMatch.year === endMatch.year && startMatch.branch === endMatch.branch) {
+      const year = startMatch.year;
+      const branch = startMatch.branch; // e.g., "CSE"
+      const startNum = startMatch.num;
+      const endNum = endMatch.num;
 
       return semesterStudents.filter((s: Student) => {
-        const sMatch = s.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
-        if (sMatch && sMatch[1] === year && sMatch[2] === branch) {
-          const sNum = parseInt(sMatch[3], 10);
-          return sNum >= startNum && sNum <= endNum;
+        const sMatch = parseRollNo(s.rollNo);
+        // Validate Year and Base Branch
+        if (sMatch && sMatch.year === year && sMatch.branch === branch) {
+          // If it's a Lateral Entry student (e.g., 303), include them automatically
+          if (sMatch.isLE) return true;
+          
+          // If it's a regular student, check if they fall within the range (e.g., 01 to 30)
+          if (!sMatch.isLE && sMatch.num >= startNum && sMatch.num <= endNum) {
+            return true;
+          }
         }
         return false;
       }).sort((a: Student, b: Student) => {
-        const aMatch = a.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
-        const bMatch = b.rollNo.match(/^(\d{4})-([A-Z]+)-(\d+)$/);
+        const aMatch = parseRollNo(a.rollNo);
+        const bMatch = parseRollNo(b.rollNo);
+        
         if (aMatch && bMatch) {
-          return parseInt(aMatch[3], 10) - parseInt(bMatch[3], 10);
+          // Sort Lateral Entry (LE) students to the end
+          if (aMatch.isLE && !bMatch.isLE) return 1;
+          if (!aMatch.isLE && bMatch.isLE) return -1;
+          
+          // Sort by roll number if both are same type
+          return aMatch.num - bMatch.num;
         }
         return a.rollNo.localeCompare(b.rollNo);
       });
     }
   }
 
+  // Fallback if roll range format is invalid
   return semesterStudents.sort((a: Student, b: Student) => a.rollNo.localeCompare(b.rollNo));
 };
 
@@ -648,7 +673,13 @@ const StudentsView = ({ students, addStudent, deleteStudent, handleUpload }: any
 };
 
 // --- Analytics View (Cascading Student Search & Subject Date-Range Register) ---
-const AnalyticsView = ({ students, schedule, attendance }: any) => {
+interface AnalyticsViewProps {
+  students: Student[];
+  schedule: ScheduleClass[];
+  attendance: AttendanceRecord[];
+}
+
+const AnalyticsView = ({ students, schedule, attendance }: AnalyticsViewProps) => {
   const [analyticsType, setAnalyticsType] = useState<'student' | 'subject'>('student');
 
   // Student Analytics State
@@ -656,7 +687,6 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
   const [selectedSem, setSelectedSem] = useState<number | ''>('');
   const [selectedRoll, setSelectedRoll] = useState<string>('');
 
-  // Explicitly type the arrays to fix TS implicit any errors
   const uniqueNames: string[] = Array.from(new Set(students.map((s: Student) => s.name)));
   const uniqueSemesters: number[] = Array.from(new Set(students.filter((s: Student) => s.name === selectedName).map((s: Student) => s.semester)));
   const availableRolls: string[] = students.filter((s: Student) => s.name === selectedName && s.semester === selectedSem).map((s: Student) => s.rollNo);
@@ -678,11 +708,11 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
 
-  // Explicitly type the arrays to fix TS implicit any errors
   const uniqueSubjects: string[] = Array.from(new Set(schedule.map((c: ScheduleClass) => c.subject)));
   const availableSemesters: number[] = Array.from(new Set(
     schedule.filter((c: ScheduleClass) => c.subject === selectedSubject).map((c: ScheduleClass) => c.semester)
   ));
+
   const availableBranches: string[] = Array.from(new Set(
     students
       .filter((s: Student) => s.semester === selectedSubSem)
@@ -693,22 +723,18 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
       .filter((b: string) => b !== '')
   ));
 
-  // 4. Find the specific class that matches Subject, Semester, and Branch
   const activeClass = schedule.find((c: ScheduleClass) =>
     c.subject === selectedSubject &&
     c.semester === selectedSubSem &&
     c.rollRange.includes(`-${selectedBranch}-`)
   );
 
-  // 5. Get Students filtered by the specific class roll range
   const subjectStudents = getFilteredStudentsForClass(activeClass, students);
 
-  // 6. Get Dates when attendance was marked for this specific class
   const classDates: string[] = activeClass
     ? [...new Set(attendance.filter((a: AttendanceRecord) => a.classId === activeClass.id).map((a: AttendanceRecord) => a.date.split('T')[0]))].sort()
     : [];
 
-  // 7. Filter dates by the selected Start and End Date
   const datesInRange: string[] = [];
   if (startDate && endDate) {
     let current = new Date(startDate);
@@ -722,8 +748,36 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
     }
   }
 
+  // --- EXPORT TO EXCEL LOGIC ---
+  const handleExportSubjectAttendance = () => {
+    if (!subjectStudents.length || !datesInRange.length) {
+      alert("No data available to export.");
+      return;
+    }
+
+    // 1. Map data to an array of objects for XLSX
+    const exportData = subjectStudents.map((stu: Student) => {
+      const row: any = { "Roll No": stu.rollNo, "Name": stu.name };
+      datesInRange.forEach((d: string) => {
+        const rec = attendance.find((a: AttendanceRecord) => a.classId === activeClass?.id && a.studentId === stu.id && a.date.split('T')[0] === d);
+        row[d] = rec?.status === 'Present' ? 'P' : rec?.status === 'Absent' ? 'A' : '-';
+      });
+      return row;
+    });
+
+    // 2. Convert to Worksheet
+    const ws = XLSX.utils.json_to_sheet(exportData);
+
+    // 3. Create Workbook and append Worksheet
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Attendance Register");
+
+    // 4. Generate Excel file and trigger download
+    const fileName = `Attendance_${selectedSubject}_Sem${selectedSubSem}_${selectedBranch}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
+
   return (
-    // ... rest of the component JSX remains exactly the same
     <div>
       <PageHeader title="Analytics" subtitle="Deep dive into individual student or subject performance." />
       <div className="flex gap-4 mb-6 border-b">
@@ -768,68 +822,77 @@ const AnalyticsView = ({ students, schedule, attendance }: any) => {
         </Card>
       ) : (
         <Card>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4 items-end mb-6">
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Select Subject</label>
-              <select value={selectedSubject} onChange={e => { setSelectedSubject(e.target.value); setSelectedSubSem(''); setSelectedBranch(''); }} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm">
-                <option value="">-- Select Subject --</option>
-                {uniqueSubjects.map((sub: string) => <option key={sub} value={sub}>{sub}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Semester</label>
-              <select value={selectedSubSem} onChange={e => { setSelectedSubSem(e.target.value === '' ? '' : parseInt(e.target.value)); setSelectedBranch(''); }} disabled={!selectedSubject} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100">
-                <option value="">-- Sem --</option>
-                {availableSemesters.map((sem: number) => <option key={sem} value={sem}>{sem}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Branch</label>
-              <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} disabled={!selectedSubSem} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100">
-                <option value="">-- Branch --</option>
-                {availableBranches.map((br: string) => <option key={br} value={br}>{br}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Start Date</label>
-              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} disabled={!selectedBranch} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">End Date</label>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} disabled={!startDate} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100" />
+          <div className="flex flex-col md:flex-row justify-between gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end flex-1">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Select Subject</label>
+                <select value={selectedSubject} onChange={e => { setSelectedSubject(e.target.value); setSelectedSubSem(''); setSelectedBranch(''); }} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm">
+                  <option value="">-- Select Subject --</option>
+                  {uniqueSubjects.map((sub: string) => <option key={sub} value={sub}>{sub}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Semester</label>
+                <select value={selectedSubSem} onChange={e => { setSelectedSubSem(e.target.value === '' ? '' : parseInt(e.target.value)); setSelectedBranch(''); }} disabled={!selectedSubject} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100">
+                  <option value="">-- Sem --</option>
+                  {availableSemesters.map((sem: number) => <option key={sem} value={sem}>{sem}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Branch</label>
+                <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)} disabled={!selectedSubSem} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100">
+                  <option value="">-- Branch --</option>
+                  {availableBranches.map((br: string) => <option key={br} value={br}>{br}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Start Date</label>
+                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} disabled={!selectedBranch} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">End Date</label>
+                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} disabled={!startDate} className="w-full border border-slate-200 p-2 rounded-md bg-white text-sm disabled:bg-slate-100" />
+              </div>
             </div>
           </div>
 
           {selectedSubject && selectedSubSem && selectedBranch && startDate && endDate && datesInRange.length > 0 ? (
-            <div className="overflow-x-auto border border-slate-100 rounded-lg">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="p-4 text-xs font-semibold text-slate-500 uppercase sticky left-0 bg-slate-50 z-10">Roll No</th>
-                    <th className="p-4 text-xs font-semibold text-slate-500 uppercase">Name</th>
-                    {datesInRange.map((d: string) => <th key={d} className="p-4 text-xs font-semibold text-slate-500 uppercase text-center">{d}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {subjectStudents.map((stu: Student) => (
-                    <tr key={stu.id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="p-4 text-sm font-medium text-slate-700 sticky left-0 bg-white z-10">{stu.rollNo}</td>
-                      <td className="p-4 text-sm text-slate-800">{stu.name}</td>
-                      {datesInRange.map((d: string) => {
-                        const rec = attendance.find((a: AttendanceRecord) => a.classId === activeClass?.id && a.studentId === stu.id && a.date.split('T')[0] === d);
-                        return (
-                          <td key={d} className="p-4 text-center">
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${rec?.status === 'Present' ? 'bg-green-100 text-green-700' : rec?.status === 'Absent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-400'}`}>
-                              {rec?.status === 'Present' ? 'P' : rec?.status === 'Absent' ? 'A' : '-'}
-                            </span>
-                          </td>
-                        );
-                      })}
+            <>
+              <div className="flex justify-end mb-4">
+                <button onClick={handleExportSubjectAttendance} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-green-700 transition-colors">
+                  <Upload size={16} className="rotate-180" /> Export to Excel
+                </button>
+              </div>
+              <div className="overflow-x-auto border border-slate-100 rounded-lg">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="p-4 text-xs font-semibold text-slate-500 uppercase sticky left-0 bg-slate-50 z-10">Roll No</th>
+                      <th className="p-4 text-xs font-semibold text-slate-500 uppercase">Name</th>
+                      {datesInRange.map((d: string) => <th key={d} className="p-4 text-xs font-semibold text-slate-500 uppercase text-center">{d}</th>)}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {subjectStudents.map((stu: Student) => (
+                      <tr key={stu.id} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="p-4 text-sm font-medium text-slate-700 sticky left-0 bg-white z-10">{stu.rollNo}</td>
+                        <td className="p-4 text-sm text-slate-800">{stu.name}</td>
+                        {datesInRange.map((d: string) => {
+                          const rec = attendance.find((a: AttendanceRecord) => a.classId === activeClass?.id && a.studentId === stu.id && a.date.split('T')[0] === d);
+                          return (
+                            <td key={d} className="p-4 text-center">
+                              <span className={`px-2 py-1 rounded text-xs font-bold ${rec?.status === 'Present' ? 'bg-green-100 text-green-700' : rec?.status === 'Absent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-400'}`}>
+                                {rec?.status === 'Present' ? 'P' : rec?.status === 'Absent' ? 'A' : '-'}
+                              </span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           ) : (
             <div className="text-center py-8 text-slate-500">
               {selectedBranch ? "Please select a Start and End date to view the attendance register." : "Please select Subject, Semester, and Branch to view its attendance register."}
